@@ -750,7 +750,8 @@ def test_specialist_form_answers_are_recorded_and_shown_to_the_model(harness) ->
 
     def sees_inputs(request):
         content = json.loads(request["messages"][-1]["content"])
-        assert content["provided_inputs"] == {"rod_diameter_mm": 9.5}  # never the sensitive value
+        assert content["user_answered_inputs"] == {"rod_diameter_mm": 9.5}  # never the sensitive value
+        assert "inputs_filled_from_context" not in content
         return reply("Analysis complete.")
 
     harness.script(
@@ -768,6 +769,51 @@ def test_specialist_form_answers_are_recorded_and_shown_to_the_model(harness) ->
     recorded = harness.store[CONV]["conversation_history"][-1]["tool_inputs"]["analyze_thermal"]
     assert recorded == {"material_id": "SS316", "temperature_c": 500, "rod_diameter_mm": 9.5}
     assert "s3cret" not in json.dumps(harness.store[CONV]["llm_messages"])
+
+
+def test_context_filled_and_form_answered_inputs_are_labelled_apart(harness) -> None:
+    # The model must not credit the user with a value the platform filled in,
+    # nor credit the skill with a value the user chose in the form.
+    replies = iter(
+        [
+            {
+                "input_required": {
+                    "missing_inputs": [{"name": "material_id", "type": "string", "resolvable_from_context": True}],
+                },
+                "_a2a_task_id": "task-1",
+            },
+            {
+                "input_required": {"missing_inputs": [{"name": "units", "type": "enum", "options": ["SI", "US"]}]},
+                "_a2a_task_id": "task-1",
+            },
+            {"result": {"answer": "Done in SI."}},
+        ]
+    )
+    harness.results.update(analyze_thermal=lambda params: next(replies))
+
+    def sees_sources(request):
+        content = json.loads(request["messages"][-1]["content"])
+        assert content["user_answered_inputs"] == {"units": "SI"}
+        assert content["inputs_filled_from_context"] == {"material_id": "SS316"}
+        assert "provided_inputs" not in content
+        return reply("Analysis complete.")
+
+    harness.script(
+        [
+            reply(calls=[tool_call("analyze_thermal", {"material_id": "SS316", "temperature_c": 500}, "c1")]),
+            sees_sources,
+        ]
+    )
+
+    first = send(query="Analyze SS316 at 500 C")
+    assert first.status == "needs_info"
+    assert [q["field"] for q in first.followup_questions] == ["units"]
+
+    response = send(followup_answers={"units": "SI"})
+
+    assert response.status == "completed"
+    recorded = harness.store[CONV]["conversation_history"][-1]["tool_inputs"]["analyze_thermal"]
+    assert recorded == {"material_id": "SS316", "temperature_c": 500, "units": "SI"}
 
 
 def test_ask_user_accepts_a_free_text_answer(harness) -> None:

@@ -748,7 +748,7 @@ def apply_answers(
                 provided[name] = value
                 if not item.get("sensitive"):
                     context[name] = value
-                    call.setdefault("recorded_inputs", {})[name] = value
+                    call.setdefault("user_answered_inputs", {})[name] = value
             if provided:
                 call["provided_inputs"] = provided
                 call["status"] = "resume"
@@ -928,7 +928,7 @@ async def _settle_skill_item(
         resolved, unresolved = _resolve_from_context(missing, call["arguments"], state.get("context") or {})
         if resolved and not call.get("auto_resumed"):
             call["auto_resumed"] = True
-            call.setdefault("recorded_inputs", {}).update(resolved)
+            call.setdefault("context_filled_inputs", {}).update(resolved)
             resumed = await invoke_skill(
                 skill_id,
                 {**params, "provided_inputs": resolved, **_a2a_resume_fields(_blocked_record(skill_id, item, [], None))},
@@ -946,13 +946,17 @@ async def _settle_skill_item(
         _finish(call, {"status": "failed", "error": str(item["error"])})
         return
     result = item.get("result")
-    # Inputs given after the call was made (form answers, values resolved from
-    # context) belong to the invocation's record, and the model must see them.
-    recorded = call.pop("recorded_inputs", {})
-    _record_result(state, _result_key(state, skill_id), {**call["arguments"], **recorded}, result)
+    # Inputs given after the call was made belong to the invocation's record, and
+    # the model must see them labelled by source: a form answer is the user's
+    # choice, a context fill is the platform's, and neither came from the skill.
+    answered = call.pop("user_answered_inputs", {})
+    filled = call.pop("context_filled_inputs", {})
+    _record_result(state, _result_key(state, skill_id), {**call["arguments"], **filled, **answered}, result)
     payload = _compact_result(result, "succeeded")
-    if recorded:
-        payload["provided_inputs"] = recorded
+    if answered:
+        payload["user_answered_inputs"] = answered
+    if filled:
+        payload["inputs_filled_from_context"] = filled
     _finish(call, payload)
 
 
